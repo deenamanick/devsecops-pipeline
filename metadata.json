@@ -1,0 +1,6 @@
+{
+  "name": "MOTORX - Premium Car Dealership",
+  "description": "Experience performance, luxury and design with MOTORX. Discover our premium collection of luxury and sports vehicles and book your private test drive.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
