@@ -1,0 +1,12 @@
+node_modules
+.git
+.github
+terraform
+.env
+.env.*
+!.env.example
+dist
+*.md
+.dockerignore
+Dockerfile
+.gitignore

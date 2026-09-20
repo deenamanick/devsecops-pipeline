@@ -1,0 +1,19 @@
+# ──────────────────────────────────────────────────────────────
+# CODEOWNERS — motor-x
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Changes to these paths will automatically request a review
+# from the listed owners when a PR is opened.
+# ──────────────────────────────────────────────────────────────
+
+# ── CI/CD Pipelines ──────────────────────────────────────────
+# Any change to workflows must be reviewed to prevent PPE attacks
+.github/workflows/                @deenamanick
+
+# ── Infrastructure & Deployment ──────────────────────────────
+terraform/                        @deenamanick
+Dockerfile                        @deenamanick
+
+# ── Dependencies (Supply Chain) ──────────────────────────────
+package.json                      @deenamanick
+package-lock.json                 @deenamanick

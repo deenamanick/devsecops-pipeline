@@ -1,0 +1,356 @@
+# ──────────────────────────────────────────────────────────────
+# Ultimate DevSecOps CI/CD Pipeline — motor-x
+# Based on: jeevi-vault CI/CD standard
+# Deployment: vagrant-ansible-terraform-docker concept
+# ──────────────────────────────────────────────────────────────
+
+name: DevSecOps CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - staging
+      - master
+      - main
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+    branches: [ staging, master, main ]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - 'terraform/**'
+      - '.github/workflows/ci.yml'
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ════════════════════════════════════════════════════════════
+  # PHASE 1: Security + SAST — "Shift Left Security"
+  # ════════════════════════════════════════════════════════════
+  security:
+    name: 🛡️ Security + SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 🛡️ Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --ignore-scripts
+
+      - name: 🕵️ Gitleaks — Secret Detection
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+        with:
+          fail: true
+
+      - name: 📦 OSV Dependency Scan
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/staging')
+        uses: google/osv-scanner-action/osv-scanner-action@v1
+        with:
+          scan-args: |
+            --lockfile=package-lock.json
+        continue-on-error: true
+
+      - name: 🔎 OSV Dependency Diff (PR Only)
+        if: github.event_name == 'pull_request'
+        uses: google/osv-scanner-action/osv-scanner-action@v1
+        with:
+          scan-args: |
+            --lockfile=package-lock.json
+            --compare-ref=origin/${{ github.base_ref }}
+        continue-on-error: true
+
+      - name: 🛡️ Semgrep SAST — Static Code Analysis
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: p/javascript p/typescript p/react p/security-audit p/secrets
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true
+
+  # ════════════════════════════════════════════════════════════
+  # PHASE 2: Code Quality — "Quality Gates"
+  # ════════════════════════════════════════════════════════════
+  lint:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --ignore-scripts
+
+      - name: 🔍 TypeScript Type Check
+        run: npm run lint
+
+  # ════════════════════════════════════════════════════════════
+  # PHASE 3: Software Testing — "Test Before You Ship"
+  # ════════════════════════════════════════════════════════════
+  test:
+    name: 🧪 Software Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --ignore-scripts
+
+      - name: 🧪 Run Unit Tests
+        run: npm test
+
+      - name: 📊 Run Tests with Coverage
+        run: npm run test:coverage
+
+      - name: 📁 Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  # ════════════════════════════════════════════════════════════
+  # PHASE 4: Build & Publish — "Containerization"
+  # ════════════════════════════════════════════════════════════
+  build:
+    name: 🏗️ Build & Publish Docker Image
+    needs: [security, lint, test]
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🏷️ Docker Metadata (Tags & Labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/motor-x
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🏗️ Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 📝 Add Build Summary
+        run: |
+          echo "### 🏗️ Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ secrets.DOCKERHUB_USERNAME }}/motor-x\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tags | \`${{ steps.meta.outputs.tags }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════
+  # PHASE 5: Deploy via Terraform — "Infrastructure as Code"
+  # ════════════════════════════════════════════════════════════
+  deploy:
+    name: 🚀 Deploy via Terraform
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: 📦 Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: ✅ Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: 📋 Terraform Plan
+        working-directory: terraform
+        run: terraform plan -var="image=${{ secrets.DOCKERHUB_USERNAME }}/motor-x:latest" -var="external_port=3000"
+
+      - name: 🚀 Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve -var="image=${{ secrets.DOCKERHUB_USERNAME }}/motor-x:latest" -var="external_port=3000"
+
+      - name: ⏳ Wait for Container to be Healthy
+        run: |
+          echo "Waiting for container to start..."
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 | grep -q "200"; then
+              echo "✅ Container is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i/30 — waiting 2s..."
+            sleep 2
+          done
+          echo "❌ Container failed to start within 60 seconds"
+          docker ps -a
+          exit 1
+
+      - name: 📝 Deploy Summary
+        run: |
+          echo "### 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ secrets.DOCKERHUB_USERNAME }}/motor-x:latest\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Container Port | \`3000\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Running |" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════
+  # PHASE 6: DAST — "Dynamic Application Security Testing"
+  # ════════════════════════════════════════════════════════════
+  dast:
+    name: 🧪 DAST — OWASP ZAP
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: 📦 Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: 🚀 Deploy Container for DAST Scan
+        working-directory: terraform
+        run: terraform apply -auto-approve -var="image=${{ secrets.DOCKERHUB_USERNAME }}/motor-x:latest" -var="external_port=3000"
+
+      - name: ⏳ Wait for Container to be Healthy
+        run: |
+          echo "Waiting for container to start..."
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 | grep -q "200"; then
+              echo "✅ Container is healthy — ready for DAST scan"
+              exit 0
+            fi
+            echo "Attempt $i/30 — waiting 2s..."
+            sleep 2
+          done
+          echo "❌ Container failed to start"
+          docker ps -a
+          exit 1
+
+      - name: 🧪 OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:3000'
+          rules_file_name: ''
+          allow_issue_writing: false
+        continue-on-error: true
+
+      - name: 📁 Upload ZAP Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-scan-report
+          path: report_html.html
+          retention-days: 14
+
+      - name: 🧹 Terraform Destroy
+        if: always()
+        working-directory: terraform
+        run: terraform destroy -auto-approve -var="image=${{ secrets.DOCKERHUB_USERNAME }}/motor-x:latest" -var="external_port=3000"
+
+      - name: 📝 DAST Summary
+        if: always()
+        run: |
+          echo "### 🧪 DAST Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | OWASP ZAP Baseline |" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | \`http://localhost:3000\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Report | Uploaded as artifact |" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════
+  # PHASE 7: Cleanup — "Operational Hygiene"
+  # ════════════════════════════════════════════════════════════
+  cleanup:
+    name: 🧹 Cleanup
+    needs: [deploy, dast]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 🧹 Delete Old Workflow Runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 30
+          keep_minimum_runs: 10
