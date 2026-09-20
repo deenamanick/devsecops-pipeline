@@ -1,17 +1,19 @@
 version: 2
 updates:
-  # Monitor GitHub Actions for version updates
+  # Monitor GitHub Actions (Manual updates only: open-pull-requests-limit set to 0)
   - package-ecosystem: "github-actions"
+  # Disable automatic PR creation (run manually from Insights -> Dependency graph -> Dependabot)
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    open-pull-requests-limit: 0
 
-  # Monitor npm dependencies
+  # Monitor npm dependencies (Manual updates only: open-pull-requests-limit set to 0)
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "security"
